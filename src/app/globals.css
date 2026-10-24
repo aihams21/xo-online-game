@@ -1,0 +1,151 @@
+@import "tailwindcss";
+
+:root {
+  --bg: #0a0e1a;
+  --bg2: #111827;
+  --card: #1a2236;
+  --border: #2a3550;
+  --text: #e2e8f0;
+  --muted: #94a3b8;
+  --x: #f43f5e;
+  --o: #22d3ee;
+  --accent: #8b5cf6;
+  --win: #22c55e;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+body {
+  background: radial-gradient(ellipse at top, #1a1040 0%, #0a0e1a 60%);
+}
+
+.glass {
+  background: rgba(26, 34, 54, 0.6);
+  backdrop-filter: blur(12px);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+}
+
+.neon-x { color: var(--x); text-shadow: 0 0 20px var(--x); }
+.neon-o { color: var(--o); text-shadow: 0 0 20px var(--o); }
+
+.cell {
+  aspect-ratio: 1;
+  background: rgba(26, 34, 54, 0.8);
+  border: 2px solid var(--border);
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: clamp(2.5rem, 8vw, 4rem);
+  font-weight: 900;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  user-select: none;
+}
+
+.cell:hover:not(.filled) {
+  border-color: var(--accent);
+  background: rgba(139, 92, 246, 0.1);
+  transform: scale(1.02);
+}
+
+.cell.filled { cursor: default; }
+.cell.win { animation: pulse 0.6s ease infinite alternate; border-color: var(--win); }
+
+@keyframes pulse {
+  from { transform: scale(1); }
+  to { transform: scale(1.05); }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.fade-in { animation: fadeIn 0.4s ease; }
+
+.btn {
+  padding: 12px 24px;
+  border-radius: 12px;
+  font-weight: 600;
+  font-size: 15px;
+  border: none;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.btn-primary {
+  background: linear-gradient(135deg, #8b5cf6, #6366f1);
+  color: white;
+  box-shadow: 0 4px 20px rgba(139, 92, 246, 0.4);
+}
+
+.btn-primary:hover { transform: translateY(-2px); box-shadow: 0 6px 24px rgba(139, 92, 246, 0.6); }
+
+.btn-secondary {
+  background: rgba(26, 34, 54, 0.8);
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+
+.btn-secondary:hover { border-color: var(--accent); background: rgba(139, 92, 246, 0.1); }
+
+.btn-success {
+  background: linear-gradient(135deg, #22c55e, #16a34a);
+  color: white;
+}
+
+.input {
+  padding: 12px 16px;
+  border-radius: 12px;
+  background: rgba(26, 34, 54, 0.8);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 16px;
+  width: 100%;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.input:focus { border-color: var(--accent); }
+
+.code-display {
+  font-family: 'Courier New', monospace;
+  font-size: 2rem;
+  font-weight: 900;
+  letter-spacing: 0.3em;
+  color: var(--accent);
+  text-shadow: 0 0 20px var(--accent);
+}
+
+.pulse-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--win);
+  animation: blink 1.5s ease infinite;
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+.scrollbar-thin::-webkit-scrollbar { width: 6px; }
+.scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
+.scrollbar-thin::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
