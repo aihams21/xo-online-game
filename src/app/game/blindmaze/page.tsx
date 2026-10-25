@@ -152,6 +152,8 @@ function GameInner() {
   const [micOn, setMicOn] = useState(false);
   const [micLoading, setMicLoading] = useState(false);
   const [micError, setMicError] = useState("");
+  const micOnRef = useRef(false);
+  useEffect(() => { micOnRef.current = micOn; }, [micOn]);
   const [remoteMicOn, setRemoteMicOn] = useState(false);
   const localStreamRef = useRef<MediaStream | null>(null);
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
@@ -221,9 +223,9 @@ function GameInner() {
   }, [myRole]);
 
   // Voice chat: toggle mic
-  const toggleMic = useCallback(async () => {
+  const toggleMic = () => {
     if (micLoading) return;
-    if (micOn) {
+    if (micOnRef.current) {
       // Turn off — update icon immediately
       setMicOn(false);
       if (localStreamRef.current) {
@@ -246,6 +248,7 @@ function GameInner() {
     setMicOn(true);
     setMicLoading(true);
     setMicError("");
+    (async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
@@ -303,7 +306,8 @@ function GameInner() {
     } finally {
       setMicLoading(false);
     }
-  }, [micOn, micLoading, isHost, room]);
+    })();
+  };
 
   // Timer (host only)
   useEffect(() => {
@@ -914,8 +918,8 @@ function GameInner() {
 
         {/* Mic toggle */}
         <button
-          onClick={toggleMic}
-          disabled={micLoading}
+          onClick={() => { toggleMic(); }}
+          disabled={false}
           className={`w-12 h-12 sm:w-14 sm:h-14 rounded-full shadow-lg flex items-center justify-center text-xl sm:text-2xl transition-all duration-200 hover:scale-110 relative ${
             micOn
               ? "bg-emerald-600 hover:bg-emerald-500 text-white"
