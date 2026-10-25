@@ -13,6 +13,14 @@ type GameState = {
   players: { X: string; O: string };
 };
 
+type ChatMessage = {
+  id: number;
+  sender: string;
+  text: string;
+  time: string;
+  isMe: boolean;
+};
+
 const WIN_LINES = [
   [0,1,2],[3,4,5],[6,7,8],
   [0,3,6],[1,4,7],[2,5,8],
@@ -47,6 +55,14 @@ function GameInner() {
   const [opponentName, setOpponentName] = useState("");
   const [error, setError] = useState("");
 
+  // Chat state
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatOpen, setChatOpen] = useState(false);
+  const [chatInput, setChatInput] = useState("");
+  const [unreadCount, setUnreadCount] = useState(0);
+  const chatEndRef = useRef<HTMLDivElement>(null);
+  const msgIdRef = useRef(0);
+
   const connRef = useRef<any>(null);
   const gameRef = useRef<GameState>(game);
   gameRef.current = game;
@@ -56,11 +72,32 @@ function GameInner() {
     setStatus(state.winner ? "ended" : "playing");
   }, []);
 
+  const addChatMessage = useCallback((sender: string, text: string, isMe: boolean) => {
+    const msg: ChatMessage = {
+      id: ++msgIdRef.current,
+      sender,
+      text,
+      time: new Date().toLocaleTimeString("ar", { hour: "2-digit", minute: "2-digit" }),
+      isMe,
+    };
+    setChatMessages(prev => [...prev, msg]);
+    if (!chatOpen) {
+      setUnreadCount(prev => prev + 1);
+    }
+  }, [chatOpen]);
+
+  const sendChat = useCallback(() => {
+    const text = chatInput.trim();
+    if (!text) return;
+    addChatMessage(name, text, true);
+    if (connRef.current && connRef.current.open) {
+      connRef.current.send({ type: "chat", text, sender: name });
+    }
+    setChatInput("");
+  }, [chatInput, name, addChatMessage]);
+
   const handleMove = useCallback((idx: number) => {
     const g = gameRef.current;
-    if (status !== "playing" && status !== "ended") {
-      // allow during playing only
-    }
     if (status !== "playing") return;
     if (g.winner) return;
     if (g.board[idx] !== null) return;
@@ -96,6 +133,18 @@ function GameInner() {
       connRef.current.send({ type: "state", state: newState });
     }
   }, []);
+
+  // Auto-scroll chat to bottom
+  useEffect(() => {
+    if (chatOpen && chatEndRef.current) {
+      chatEndRef.current.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [chatMessages, chatOpen]);
+
+  // Reset unread when opening chat
+  useEffect(() => {
+    if (chatOpen) setUnreadCount(0);
+  }, [chatOpen]);
 
   useEffect(() => {
     if (!room) { router.push("/"); return; }
@@ -139,6 +188,8 @@ function GameInner() {
               if (c.open) c.send({ type: "state", state: newState });
             } else if (data.type === "state") {
               applyState(data.state);
+            } else if (data.type === "chat") {
+              addChatMessage(data.sender || "الخصم", data.text, false);
             }
           });
           c.on("close", () => {
@@ -160,6 +211,8 @@ function GameInner() {
             if (data.state.players.O) setOpponentName(data.state.players.O === name ? data.state.players.X : data.state.players.O);
           } else if (data.type === "welcome") {
             setOpponentName(data.hostName);
+          } else if (data.type === "chat") {
+            addChatMessage(data.sender || "الخصم", data.text, false);
           }
         });
         c.on("close", () => {
@@ -208,9 +261,16 @@ function GameInner() {
     return "دور الخصم...";
   };
 
+  const handleChatKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      sendChat();
+    }
+  };
+
   return (
     <main className="min-h-screen flex items-center justify-center p-4">
-      <div className="w-full max-w-md fade-in">
+      <div className="w-full max-w-md fade-in relative">
         <div className="flex items-center justify-between mb-4">
           <button className="btn btn-secondary text-sm" onClick={() => router.push("/")}>
             ← خروج
@@ -269,17 +329,97 @@ function GameInner() {
         </div>
 
         {status === "ended" && game.winner !== null && (
-          <div className="text-center">
+          <div className="text-center mb-4">
             <button className="btn btn-primary" onClick={resetGame}>
               🔄 إعادة اللعب / Play Again
             </button>
+          </div>
+        )}
+
+        {/* Floating chat toggle button */}
+        <button
+          onClick={() => setChatOpen(!chatOpen)}
+          className="fixed bottom-4 right-4 z-50 w-14 h-14 rounded-full bg-violet-600 hover:bg-violet-500 text-white shadow-lg flex items-center justify-center text-2xl transition-all duration-200 hover:scale-110"
+          aria-label="فتح الدردشة"
+        >
+          💬
+          {unreadCount > 0 && (
+            <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center">
+              {unreadCount > 9 ? "9+" : unreadCount}
+            </span>
+          )}
+        </button>
+
+        {/* Chat panel */}
+        {chatOpen && (
+          <div className="fixed bottom-20 right-4 z-50 w-80 max-w-[calc(100vw-2rem)] glass rounded-2xl shadow-2xl flex flex-col overflow-hidden"
+               style={{ height: "360px" }}>
+            <div className="flex items-center justify-between px-4 py-2 border-b border-white/10 bg-white/5">
+              <h3 className="text-sm font-semibold text-slate-200">💬 دردشة / Chat</h3>
+              <button
+                onClick={() => setChatOpen(false)}
+                className="text-slate-400 hover:text-white text-lg leading-none"
+                aria-label="إغلاق"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto px-3 py-2 space-y-2">
+              {chatMessages.length === 0 && (
+                <p className="text-slate-500 text-xs text-center mt-4">
+                  لا توجد رسائل بعد. ابدأ المحادثة! 💬
+                </p>
+              )}
+              {chatMessages.map((msg) => (
+                <div
+                  key={msg.id}
+                  className={`flex ${msg.isMe ? "justify-end" : "justify-start"}`}
+                >
+                  <div
+                    className={`max-w-[75%] rounded-xl px-3 py-1.5 text-sm ${
+                      msg.isMe
+                        ? "bg-violet-600 text-white rounded-br-sm"
+                        : "bg-slate-700 text-slate-100 rounded-bl-sm"
+                    }`}
+                  >
+                    {!msg.isMe && (
+                      <div className="text-xs text-slate-400 mb-0.5 font-semibold">{msg.sender}</div>
+                    )}
+                    <div className="break-words">{msg.text}</div>
+                    <div className={`text-[10px] mt-0.5 ${msg.isMe ? "text-violet-200" : "text-slate-500"}`}>
+                      {msg.time}
+                    </div>
+                  </div>
+                </div>
+              ))}
+              <div ref={chatEndRef} />
+            </div>
+
+            <div className="px-3 py-2 border-t border-white/10 bg-white/5 flex gap-2">
+              <input
+                type="text"
+                value={chatInput}
+                onChange={(e) => setChatInput(e.target.value)}
+                onKeyDown={handleChatKeyDown}
+                placeholder="اكتب رسالة..."
+                className="flex-1 bg-slate-800/80 border border-slate-600 rounded-lg px-3 py-1.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-violet-500"
+                maxLength={500}
+              />
+              <button
+                onClick={sendChat}
+                disabled={!chatInput.trim()}
+                className="btn btn-primary text-sm px-3 py-1.5 disabled:opacity-40"
+              >
+                ➤
+              </button>
+            </div>
           </div>
         )}
       </div>
     </main>
   );
 }
-
 
 export default function Game() {
   return (

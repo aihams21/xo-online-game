@@ -104,13 +104,13 @@ export default function Home() {
         <div className="glass p-6 mt-6">
           <h3 className="text-center text-slate-300 font-semibold mb-4">📥 تنزيل التطبيق / Download App</h3>
           <div className="grid grid-cols-1 gap-2">
-            <a href="/downloads/xo-game.apk" className="btn btn-secondary w-full" download>
+            <a href="https://github.com/aihams21/xo-online-game/releases/download/v1.0.0/app-debug.apk" className="btn btn-secondary w-full" download>
               🤖 Android (APK)
             </a>
-            <a href="/downloads/xo-game.AppImage" className="btn btn-secondary w-full" download>
+            <a href="https://github.com/aihams21/xo-online-game/releases/download/v1.0.0/XO.Online-1.0.0.AppImage" className="btn btn-secondary w-full" download>
               🐧 Linux (AppImage)
             </a>
-            <a href="/downloads/xo-game.exe" className="btn btn-secondary w-full" download>
+            <a href="https://github.com/aihams21/xo-online-game/releases/download/v1.0.0/XO.Online.Setup.1.0.0.exe" className="btn btn-secondary w-full" download>
               🪟 Windows (.exe)
             </a>
           </div>
