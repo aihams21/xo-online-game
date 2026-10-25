@@ -97,24 +97,10 @@ function generateMazeWithSeed(seed: number): { maze: CellType[][]; start: Pos; e
     placed++;
   }
 
-  // Add extra walls to make it harder (block some paths)
-  const extraWalls = Math.floor(size * 1.5);
-  let ew = 0;
-  for (let i = 0; i < extraWalls * 3 && ew < extraWalls; i++) {
-    const rx = 1 + Math.floor(rng() * (size - 2));
-    const ry = 1 + Math.floor(rng() * (size - 2));
-    if (maze[ry][rx] === "path") {
-      // Don't block start, exit, or create isolated areas
-      const neighbors = [
-        [rx - 1, ry], [rx + 1, ry], [rx, ry - 1], [rx, ry + 1],
-      ].filter(([nx, ny]) => nx >= 0 && ny >= 0 && nx < size && ny < size);
-      const pathNeighbors = neighbors.filter(([nx, ny]) => maze[ny][nx] === "path" || maze[ny][nx] === "start" || maze[ny][nx] === "exit");
-      if (pathNeighbors.length >= 2) {
-        maze[ry][rx] = "wall";
-        ew++;
-      }
-    }
-  }
+  // Validate solvability with BFS; if no path, this maze is still solvable
+  // because recursive backtracking always produces a perfect maze.
+  // We only place traps on cells that don't disconnect the maze.
+  // (No extra walls added — they caused trapped/unreachable cells.)
 
   return { maze, start, exit };
 }
@@ -152,6 +138,7 @@ function GameInner() {
   const [error, setError] = useState("");
   const [opponentName, setOpponentName] = useState("");
   const [status, setStatus] = useState<"connecting" | "waiting" | "playing" | "won" | "lost">("connecting");
+  const [revealLeft, setRevealLeft] = useState(0);
 
   // Chat
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
@@ -165,6 +152,7 @@ function GameInner() {
   const [micOn, setMicOn] = useState(false);
   const [micLoading, setMicLoading] = useState(false);
   const [micError, setMicError] = useState("");
+  const [remoteMicOn, setRemoteMicOn] = useState(false);
   const localStreamRef = useRef<MediaStream | null>(null);
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
   const mediaCallRef = useRef<any>(null);
@@ -247,6 +235,10 @@ function GameInner() {
       }
       setMicOn(false);
       setMicError("");
+      // Notify other party
+      if (connRef.current && connRef.current.open) {
+        connRef.current.send({ type: "mic", on: false });
+      }
       return;
     }
 
@@ -264,41 +256,44 @@ function GameInner() {
       localStreamRef.current = stream;
 
       const peer = peerRef.current;
-      if (!peer) {
-        throw new Error("Peer not ready");
+      if (!peer) throw new Error("Peer not ready");
+
+      const otherPeerId = isHost
+        ? guestPeerIdRef.current
+        : `bm-host-${room}`;
+
+      if (!otherPeerId) throw new Error("الطرف الآخر غير متصل");
+
+      // Close existing call if any
+      if (mediaCallRef.current) {
+        try { mediaCallRef.current.close(); } catch {}
+        mediaCallRef.current = null;
       }
 
-      if (isHost) {
-        // Host calls guest
-        const guestId = guestPeerIdRef.current;
-        if (!guestId) {
-          throw new Error("Guest not connected");
+      const call = peer.call(otherPeerId, stream);
+      mediaCallRef.current = call;
+      call.on("stream", (remoteStream: MediaStream) => {
+        if (remoteAudioRef.current) {
+          remoteAudioRef.current.srcObject = remoteStream;
+          remoteAudioRef.current.play().catch(() => {});
         }
-        const call = peer.call(guestId, stream);
-        mediaCallRef.current = call;
-        call.on("stream", (remoteStream: MediaStream) => {
-          if (remoteAudioRef.current) {
-            remoteAudioRef.current.srcObject = remoteStream;
-            remoteAudioRef.current.play().catch(() => {});
-          }
-        });
-        call.on("close", () => {
-          mediaCallRef.current = null;
-        });
-        call.on("error", (e: any) => {
-          console.error("Call error:", e);
-          setMicError("خطأ في المكالمة");
-        });
-      } else {
-        // Guest waits for incoming call, but also needs to be ready
-        // The host will call us; we answer when call arrives
-        // Store stream for when call comes in
-        (peer as any)._pendingStream = stream;
-      }
+      });
+      call.on("close", () => {
+        mediaCallRef.current = null;
+      });
+      call.on("error", (e: any) => {
+        console.error("Call error:", e);
+        setMicError("خطأ في المكالمة");
+      });
+
       setMicOn(true);
+      // Notify other party
+      if (connRef.current && connRef.current.open) {
+        connRef.current.send({ type: "mic", on: true });
+      }
     } catch (e: any) {
       console.error("Mic error:", e);
-      setMicError(e?.message || "خطأ في المايك");
+      setMicError(e?.name === "NotAllowedError" ? "تم رفض الوصول للمايك" : (e?.message || "خطأ في المايك"));
       if (localStreamRef.current) {
         localStreamRef.current.getTracks().forEach((t) => t.stop());
         localStreamRef.current = null;
@@ -307,7 +302,7 @@ function GameInner() {
     } finally {
       setMicLoading(false);
     }
-  }, [micOn, micLoading, isHost]);
+  }, [micOn, micLoading, isHost, room]);
 
   // Timer (host only)
   useEffect(() => {
@@ -386,7 +381,7 @@ function GameInner() {
 
     // Handle incoming media calls (for voice chat)
     p.on("call", (call: any) => {
-      const stream = (p as any)._pendingStream || null;
+      const stream = localStreamRef.current;
       if (stream) {
         call.answer(stream);
       } else {
@@ -398,6 +393,10 @@ function GameInner() {
         } catch {
           call.answer();
         }
+      }
+      // If we already have a call, close it
+      if (mediaCallRef.current && mediaCallRef.current !== call) {
+        try { mediaCallRef.current.close(); } catch {}
       }
       mediaCallRef.current = call;
       call.on("stream", (remoteStream: MediaStream) => {
@@ -501,6 +500,8 @@ function GameInner() {
               addChatMessage(data.sender || "الخصم", data.text, false);
             } else if (data.type === "ping") {
               // host doesn't need to handle ping (it's the guide)
+            } else if (data.type === "mic") {
+              setRemoteMicOn(data.on);
             }
           });
           c.on("close", () => {
@@ -526,6 +527,8 @@ function GameInner() {
             }
           } else if (data.type === "chat") {
             addChatMessage(data.sender || "الخصم", data.text, false);
+          } else if (data.type === "mic") {
+            setRemoteMicOn(data.on);
           } else if (data.type === "ping") {
             const g = gameRef.current;
             if (g) {
@@ -615,14 +618,30 @@ function GameInner() {
     return `${m}:${sec.toString().padStart(2, "0")}`;
   };
 
-  // Visibility: walker sees only plus shape (current + 4 neighbors)
+  // Reveal timer: show full map for first 5 seconds
+  useEffect(() => {
+    if (status !== "playing") return;
+    if (myRole !== "walker") return;
+    setRevealLeft(5);
+    const interval = setInterval(() => {
+      setRevealLeft((prev) => {
+        if (prev <= 1) {
+          clearInterval(interval);
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [status, myRole, game?.mapIndex]);
+
+  // Visibility: guide sees all; walker sees full map during reveal, then 7x7
   const isVisible = (x: number, y: number): boolean => {
     if (myRole === "guide") return true;
     if (!game) return false;
+    if (revealLeft > 0) return true; // full map reveal
     const w = game.walker;
-    if (x === w.x && y === w.y) return true;
-    if (Math.abs(x - w.x) + Math.abs(y - w.y) === 1) return true;
-    return false;
+    return Math.abs(x - w.x) <= 3 && Math.abs(y - w.y) <= 3;
   };
 
   const renderCell = (cell: CellType, x: number, y: number) => {
@@ -733,14 +752,14 @@ function GameInner() {
       {/* Players */}
       <div className="w-full max-w-3xl flex justify-between gap-2 mb-1 sm:mb-2">
         <div className={`glass p-1.5 sm:p-2 flex-1 text-center text-xs ${myRole === "guide" ? "ring-2 ring-cyan-500" : ""}`}>
-          <span className="text-cyan-400 font-bold">👁️ مرشد</span>
+          <span className="text-cyan-400 font-bold">👁️ مرشد {remoteMicOn && myRole === "walker" ? "🎤" : ""}</span>
           <div className="text-slate-300 truncate">{game?.players.guide || name}</div>
-          {myRole === "guide" && <div className="text-[10px] text-cyan-400">أنت</div>}
+          {myRole === "guide" && <div className="text-[10px] text-cyan-400">أنت {micOn ? "🎤" : ""}</div>}
         </div>
         <div className={`glass p-1.5 sm:p-2 flex-1 text-center text-xs ${myRole === "walker" ? "ring-2 ring-amber-500" : ""}`}>
-          <span className="text-amber-400 font-bold">🚶 مشي</span>
+          <span className="text-amber-400 font-bold">🚶 مشي {remoteMicOn && myRole === "guide" ? "🎤" : ""}</span>
           <div className="text-slate-300 truncate">{game?.players.walker || opponentName || "..."}</div>
-          {myRole === "walker" && <div className="text-[10px] text-amber-400">أنت</div>}
+          {myRole === "walker" && <div className="text-[10px] text-amber-400">أنت {micOn ? "🎤" : ""}</div>}
         </div>
       </div>
 
@@ -753,17 +772,24 @@ function GameInner() {
         </div>
       )}
 
-      {/* Maze Grid (scrollable on small screens) */}
+      {/* Maze Grid */}
       {game && (
-        <div className="w-full max-w-3xl mb-1 sm:mb-2 overflow-auto">
+        <div className="w-full max-w-4xl mb-1 sm:mb-2 flex justify-center relative">
+          {revealLeft > 0 && myRole === "walker" && (
+            <div className="absolute inset-0 z-10 flex items-center justify-center bg-black/40 rounded-xl pointer-events-none">
+              <div className="text-4xl sm:text-6xl font-black text-white animate-pulse">
+                {revealLeft}
+              </div>
+            </div>
+          )}
           <div
-            className="glass p-1.5 sm:p-2 rounded-xl mx-auto"
+            className="glass p-2 sm:p-3 rounded-xl"
             style={{
               display: "grid",
               gridTemplateColumns: `repeat(${MAZE_SIZE}, 1fr)`,
               gap: "1px",
-              width: "fit-content",
-              maxWidth: "100%",
+              width: "min(90vw, 600px)",
+              aspectRatio: "1 / 1",
             }}
           >
             {game.maze.map((row, y) =>
@@ -855,6 +881,7 @@ function GameInner() {
                   };
                   setGame(newState);
                   gameRef.current = newState;
+                  setRevealLeft(5);
                   setStatus("playing");
                   if (connRef.current && connRef.current.open) {
                     connRef.current.send({ type: "state", state: newState });
