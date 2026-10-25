@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "XO Online — لعبة إكس أو أونلاين",
-  description: "العب إكس أو أونلاين مع أصدقائك من أي مكان في العالم",
+  title: "XO Online — ألعاب أونلاين",
+  description: "العب إكس أو وأربعة في صف أونلاين مع أصدقائك من أي مكان في العالم",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
