@@ -6,7 +6,7 @@ import { Suspense } from "react";
 import Peer from "peerjs";
 
 // ─── Maze constants ───
-const MAZE_SIZE = 13; // odd for recursive backtracking
+const MAZE_SIZE = 21;
 type CellType = "wall" | "path" | "exit" | "trap" | "start";
 type Pos = { x: number; y: number };
 
@@ -19,17 +19,28 @@ type MazeGameState = {
   status: "waiting" | "playing" | "won" | "lost";
   players: { guide: string; walker: string };
   trapsTriggered: number;
-  startedAt: number | null;
+  mapIndex: number;
 };
 
-// ─── Maze generation (recursive backtracking) ───
-function generateMaze(): { maze: CellType[][]; start: Pos; exit: Pos } {
+// ─── Seeded PRNG (mulberry32) ───
+function mulberry32(seed: number) {
+  return function () {
+    seed |= 0;
+    seed = (seed + 0x6d2b79f5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// ─── Maze generation (seeded recursive backtracking) ───
+function generateMazeWithSeed(seed: number): { maze: CellType[][]; start: Pos; exit: Pos } {
+  const rng = mulberry32(seed);
   const size = MAZE_SIZE;
   const maze: CellType[][] = Array.from({ length: size }, () =>
     Array(size).fill("wall")
   );
 
-  // Carve paths
   function carve(x: number, y: number) {
     maze[y][x] = "path";
     const dirs = [
@@ -37,7 +48,7 @@ function generateMaze(): { maze: CellType[][]; start: Pos; exit: Pos } {
       [0, 2],
       [-2, 0],
       [2, 0],
-    ].sort(() => Math.random() - 0.5);
+    ].sort(() => rng() - 0.5);
     for (const [dx, dy] of dirs) {
       const nx = x + dx;
       const ny = y + dy;
@@ -49,11 +60,10 @@ function generateMaze(): { maze: CellType[][]; start: Pos; exit: Pos } {
   }
   carve(1, 1);
 
-  // Start and exit
   const start: Pos = { x: 1, y: 1 };
-  // Find a far cell for exit
+
+  // Exit: far corner, find nearest path
   let exit: Pos = { x: size - 2, y: size - 2 };
-  // Ensure exit is a path; if not, find nearest path
   if (maze[exit.y][exit.x] !== "path") {
     outer: for (let r = size - 2; r >= 1; r--) {
       for (let c = size - 2; c >= 1; c--) {
@@ -67,8 +77,8 @@ function generateMaze(): { maze: CellType[][]; start: Pos; exit: Pos } {
   maze[start.y][start.x] = "start";
   maze[exit.y][exit.x] = "exit";
 
-  // Place traps (3-5) on path cells (not start, not exit, not adjacent to start/exit)
-  const trapCount = 3 + Math.floor(Math.random() * 3);
+  // Place traps (5-8) on path cells far from start and exit
+  const trapCount = 5 + Math.floor(rng() * 4);
   let placed = 0;
   const candidates: Pos[] = [];
   for (let y = 1; y < size - 1; y++) {
@@ -76,19 +86,50 @@ function generateMaze(): { maze: CellType[][]; start: Pos; exit: Pos } {
       if (maze[y][x] === "path") {
         const distStart = Math.abs(x - start.x) + Math.abs(y - start.y);
         const distExit = Math.abs(x - exit.x) + Math.abs(y - exit.y);
-        if (distStart > 3 && distExit > 2) candidates.push({ x, y });
+        if (distStart > 4 && distExit > 3) candidates.push({ x, y });
       }
     }
   }
-  candidates.sort(() => Math.random() - 0.5);
+  candidates.sort(() => rng() - 0.5);
   for (const c of candidates) {
     if (placed >= trapCount) break;
     maze[c.y][c.x] = "trap";
     placed++;
   }
 
+  // Add extra walls to make it harder (block some paths)
+  const extraWalls = Math.floor(size * 1.5);
+  let ew = 0;
+  for (let i = 0; i < extraWalls * 3 && ew < extraWalls; i++) {
+    const rx = 1 + Math.floor(rng() * (size - 2));
+    const ry = 1 + Math.floor(rng() * (size - 2));
+    if (maze[ry][rx] === "path") {
+      // Don't block start, exit, or create isolated areas
+      const neighbors = [
+        [rx - 1, ry], [rx + 1, ry], [rx, ry - 1], [rx, ry + 1],
+      ].filter(([nx, ny]) => nx >= 0 && ny >= 0 && nx < size && ny < size);
+      const pathNeighbors = neighbors.filter(([nx, ny]) => maze[ny][nx] === "path" || maze[ny][nx] === "start" || maze[ny][nx] === "exit");
+      if (pathNeighbors.length >= 2) {
+        maze[ry][rx] = "wall";
+        ew++;
+      }
+    }
+  }
+
   return { maze, start, exit };
 }
+
+// 7 map seeds
+const MAP_SEEDS = [1001, 2002, 3003, 4004, 5005, 6006, 7007];
+const MAP_NAMES = [
+  "المتاهة ١ — البداية",
+  "المتاهة ٢ — المتاهة المظلمة",
+  "المتاهة ٣ — متاهة الفخاخ",
+  "المتاهة ٤ — التحدي",
+  "المتاهة ٥ — المتاهة العميقة",
+  "المتاهة ٦ — labyrinth of Shadows",
+  "المتاهة ٧ — الفخ final",
+];
 
 type ChatMessage = {
   id: number;
@@ -120,6 +161,15 @@ function GameInner() {
   const chatEndRef = useRef<HTMLDivElement>(null);
   const msgIdRef = useRef(0);
 
+  // Voice chat
+  const [micOn, setMicOn] = useState(false);
+  const [micLoading, setMicLoading] = useState(false);
+  const [micError, setMicError] = useState("");
+  const localStreamRef = useRef<MediaStream | null>(null);
+  const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
+  const mediaCallRef = useRef<any>(null);
+  const guestPeerIdRef = useRef<string>("");
+
   // Input
   const [touchStart, setTouchStart] = useState<{ x: number; y: number } | null>(null);
 
@@ -127,6 +177,7 @@ function GameInner() {
   const gameRef = useRef<MazeGameState | null>(null);
   gameRef.current = game;
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const peerRef = useRef<any>(null);
 
   const addChatMessage = useCallback((sender: string, text: string, isMe: boolean) => {
     const msg: ChatMessage = {
@@ -150,12 +201,11 @@ function GameInner() {
     setChatInput("");
   }, [chatInput, name, addChatMessage]);
 
-  // Movement
+  // Movement request (walker → host)
   const moveWalker = useCallback((dx: number, dy: number) => {
     if (myRole !== "walker") return;
     const g = gameRef.current;
     if (!g || g.status !== "playing") return;
-    // Send move request to host (host validates and broadcasts state)
     if (connRef.current && connRef.current.open) {
       connRef.current.send({ type: "move", dx, dy });
     }
@@ -172,7 +222,6 @@ function GameInner() {
     if (connRef.current && connRef.current.open) {
       connRef.current.send({ type: "ping", pos: { x, y } });
     }
-    // Clear ping after 2s
     setTimeout(() => {
       const cur = gameRef.current;
       if (cur && cur.guidePing && cur.guidePing.x === x && cur.guidePing.y === y) {
@@ -182,6 +231,83 @@ function GameInner() {
       }
     }, 2000);
   }, [myRole]);
+
+  // Voice chat: toggle mic
+  const toggleMic = useCallback(async () => {
+    if (micLoading) return;
+    if (micOn) {
+      // Turn off
+      if (localStreamRef.current) {
+        localStreamRef.current.getTracks().forEach((t) => t.stop());
+        localStreamRef.current = null;
+      }
+      if (mediaCallRef.current) {
+        try { mediaCallRef.current.close(); } catch {}
+        mediaCallRef.current = null;
+      }
+      setMicOn(false);
+      setMicError("");
+      return;
+    }
+
+    // Turn on
+    setMicLoading(true);
+    setMicError("");
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+      });
+      localStreamRef.current = stream;
+
+      const peer = peerRef.current;
+      if (!peer) {
+        throw new Error("Peer not ready");
+      }
+
+      if (isHost) {
+        // Host calls guest
+        const guestId = guestPeerIdRef.current;
+        if (!guestId) {
+          throw new Error("Guest not connected");
+        }
+        const call = peer.call(guestId, stream);
+        mediaCallRef.current = call;
+        call.on("stream", (remoteStream: MediaStream) => {
+          if (remoteAudioRef.current) {
+            remoteAudioRef.current.srcObject = remoteStream;
+            remoteAudioRef.current.play().catch(() => {});
+          }
+        });
+        call.on("close", () => {
+          mediaCallRef.current = null;
+        });
+        call.on("error", (e: any) => {
+          console.error("Call error:", e);
+          setMicError("خطأ في المكالمة");
+        });
+      } else {
+        // Guest waits for incoming call, but also needs to be ready
+        // The host will call us; we answer when call arrives
+        // Store stream for when call comes in
+        (peer as any)._pendingStream = stream;
+      }
+      setMicOn(true);
+    } catch (e: any) {
+      console.error("Mic error:", e);
+      setMicError(e?.message || "خطأ في المايك");
+      if (localStreamRef.current) {
+        localStreamRef.current.getTracks().forEach((t) => t.stop());
+        localStreamRef.current = null;
+      }
+      setMicOn(false);
+    } finally {
+      setMicLoading(false);
+    }
+  }, [micOn, micLoading, isHost]);
 
   // Timer (host only)
   useEffect(() => {
@@ -211,7 +337,7 @@ function GameInner() {
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
     };
-  }, [status, game?.status]);
+  }, [status, game?.status, myRole]);
 
   // Keyboard input
   useEffect(() => {
@@ -247,6 +373,7 @@ function GameInner() {
     setTouchStart(null);
   };
 
+  // PeerJS connection
   useEffect(() => {
     if (!room) { router.push("/"); return; }
 
@@ -255,21 +382,65 @@ function GameInner() {
       : `bm-guest-${room}-${Math.random().toString(36).slice(2, 8)}`;
 
     const p = new Peer(peerId, { debug: 0 });
+    peerRef.current = p;
+
+    // Handle incoming media calls (for voice chat)
+    p.on("call", (call: any) => {
+      const stream = (p as any)._pendingStream || null;
+      if (stream) {
+        call.answer(stream);
+      } else {
+        // No local stream yet; answer with empty stream
+        try {
+          const ctx = new AudioContext();
+          const dest = ctx.createMediaStreamDestination();
+          call.answer(dest.stream);
+        } catch {
+          call.answer();
+        }
+      }
+      mediaCallRef.current = call;
+      call.on("stream", (remoteStream: MediaStream) => {
+        if (remoteAudioRef.current) {
+          remoteAudioRef.current.srcObject = remoteStream;
+          remoteAudioRef.current.play().catch(() => {});
+        }
+      });
+      call.on("close", () => {
+        mediaCallRef.current = null;
+      });
+    });
 
     const onOpen = () => {
       if (isHost) {
         setMyRole("guide");
-        const { maze, start, exit } = generateMaze();
+        const mapIndex = Math.floor(Math.random() * MAP_SEEDS.length);
+        const { maze, start } = generateMazeWithSeed(MAP_SEEDS[mapIndex]);
+        // Find exit
+        let exit = { x: MAZE_SIZE - 2, y: MAZE_SIZE - 2 };
+        if (maze[exit.y][exit.x] !== "path" && maze[exit.y][exit.x] !== "exit") {
+          outer: for (let r = MAZE_SIZE - 2; r >= 1; r--) {
+            for (let c = MAZE_SIZE - 2; c >= 1; c--) {
+              if (maze[r][c] === "path") {
+                exit = { x: c, y: r };
+                break outer;
+              }
+            }
+          }
+        }
+        maze[start.y][start.x] = "start";
+        maze[exit.y][exit.x] = "exit";
+
         const initial: MazeGameState = {
           maze,
           walker: start,
           guidePing: null,
           lives: 3,
-          timeLeft: 120,
+          timeLeft: 180,
           status: "waiting",
           players: { guide: name, walker: "" },
           trapsTriggered: 0,
-          startedAt: null,
+          mapIndex,
         };
         setGame(initial);
         setStatus("waiting");
@@ -277,6 +448,7 @@ function GameInner() {
         p.on("connection", (c: any) => {
           connRef.current = c;
           setConn(c);
+          guestPeerIdRef.current = c.peer;
           c.on("data", (data: any) => {
             if (data.type === "join") {
               setOpponentName(data.name);
@@ -284,14 +456,12 @@ function GameInner() {
                 ...initial,
                 players: { guide: name, walker: data.name },
                 status: "playing",
-                startedAt: Date.now(),
               };
               setGame(updated);
               gameRef.current = updated;
               setStatus("playing");
               if (c.open) c.send({ type: "state", state: updated });
             } else if (data.type === "move") {
-              // walker moved, host validates
               const g = gameRef.current;
               if (!g || g.status !== "playing") return;
               const { dx, dy } = data;
@@ -330,7 +500,7 @@ function GameInner() {
             } else if (data.type === "chat") {
               addChatMessage(data.sender || "الخصم", data.text, false);
             } else if (data.type === "ping") {
-              // guide pinged, already handled by host
+              // host doesn't need to handle ping (it's the guide)
             }
           });
           c.on("close", () => {
@@ -349,15 +519,14 @@ function GameInner() {
         c.on("data", (data: any) => {
           if (data.type === "state") {
             applyState(data.state);
-            if (data.state.players.walker === name) {
-              setOpponentName(data.state.players.guide);
-            } else {
-              setOpponentName(data.state.players.walker === name ? data.state.players.guide : data.state.players.walker);
+            if (data.state.players) {
+              setOpponentName(
+                data.state.players.guide === name ? data.state.players.walker : data.state.players.guide
+              );
             }
           } else if (data.type === "chat") {
             addChatMessage(data.sender || "الخصم", data.text, false);
           } else if (data.type === "ping") {
-            // Show ping on walker's view
             const g = gameRef.current;
             if (g) {
               const newState = { ...g, guidePing: data.pos };
@@ -391,7 +560,6 @@ function GameInner() {
       else if (state.status === "lost") setStatus("lost");
       else if (state.status === "playing") setStatus("playing");
       else if (state.status === "waiting") setStatus("waiting");
-      // Set role based on players
     };
 
     p.on("open", onOpen);
@@ -408,17 +576,22 @@ function GameInner() {
 
     return () => {
       p.destroy();
+      peerRef.current = null;
       if (timerRef.current) clearInterval(timerRef.current);
+      if (localStreamRef.current) {
+        localStreamRef.current.getTracks().forEach((t) => t.stop());
+      }
+      if (mediaCallRef.current) {
+        try { mediaCallRef.current.close(); } catch {}
+      }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [room, name, isHost, router]);
 
-  // Set role on mount
   useEffect(() => {
     setMyRole(isHost ? "guide" : "walker");
   }, [isHost]);
 
-  // Auto-scroll chat
   useEffect(() => {
     if (chatOpen && chatEndRef.current) {
       chatEndRef.current.scrollIntoView({ behavior: "smooth" });
@@ -442,8 +615,18 @@ function GameInner() {
     return `${m}:${sec.toString().padStart(2, "0")}`;
   };
 
-  // Render a single cell
-  const renderCell = (cell: CellType, x: number, y: number, visible: boolean, isWalker: boolean, isGuide: boolean) => {
+  // Visibility: walker sees only plus shape (current + 4 neighbors)
+  const isVisible = (x: number, y: number): boolean => {
+    if (myRole === "guide") return true;
+    if (!game) return false;
+    const w = game.walker;
+    if (x === w.x && y === w.y) return true;
+    if (Math.abs(x - w.x) + Math.abs(y - w.y) === 1) return true;
+    return false;
+  };
+
+  const renderCell = (cell: CellType, x: number, y: number) => {
+    const visible = isVisible(x, y);
     const isWalkerPos = game?.walker.x === x && game?.walker.y === y;
     const isPing = game?.guidePing?.x === x && game?.guidePing?.y === y;
 
@@ -451,81 +634,73 @@ function GameInner() {
       return (
         <div
           key={`${x}-${y}`}
-          className="aspect-square bg-slate-900/80 rounded-sm"
-          style={{ boxShadow: "inset 0 0 8px rgba(0,0,0,0.5)" }}
+          className="aspect-square bg-slate-950 rounded-sm"
+          style={{ boxShadow: "inset 0 0 4px rgba(0,0,0,0.8)" }}
         />
       );
     }
 
-    let bg = "bg-slate-800/60";
-    let content = null;
-    let extra = "";
+    let bg = "bg-slate-800/40";
+    let content: React.ReactNode = null;
 
     if (cell === "wall") {
-      bg = "bg-slate-700/80";
+      bg = "bg-slate-600/70";
     } else if (cell === "path" || cell === "start") {
-      bg = "bg-slate-800/40";
+      bg = "bg-slate-800/30";
     } else if (cell === "exit") {
-      bg = "bg-emerald-900/40";
-      content = <span className="text-emerald-400 text-lg animate-pulse">🚪</span>;
+      bg = "bg-emerald-900/50";
+      content = <span className="text-emerald-400 text-sm animate-pulse">🚪</span>;
     } else if (cell === "trap") {
-      if (isGuide) {
-        bg = "bg-red-900/30";
-        content = <span className="text-red-400 text-xs">⚠</span>;
+      if (myRole === "guide") {
+        bg = "bg-red-900/40";
+        content = <span className="text-red-400 text-[10px]">⚠</span>;
       } else {
-        bg = "bg-slate-800/40"; // hidden from walker
+        bg = "bg-slate-800/30";
       }
     }
 
     if (isWalkerPos) {
       content = (
-        <div className="w-3/4 h-3/4 rounded-full bg-gradient-to-br from-cyan-400 to-blue-500 shadow-lg shadow-cyan-500/50 animate-pulse" />
+        <div className="w-2/3 h-2/3 rounded-full bg-gradient-to-br from-cyan-400 to-blue-500 shadow-md shadow-cyan-500/60 animate-pulse" />
       );
     }
 
-    if (isPing) {
-      extra = "ring-2 ring-yellow-400 ring-offset-1 ring-offset-slate-900";
-    }
+    const pingRing = isPing ? "ring-2 ring-yellow-400 ring-offset-1 ring-offset-slate-900" : "";
+    const cursor = myRole === "guide" && cell !== "wall" ? "cursor-pointer hover:bg-cyan-900/40" : "";
 
     return (
       <div
         key={`${x}-${y}`}
-        className={`aspect-square rounded-sm flex items-center justify-center transition-all duration-200 ${bg} ${extra} ${isGuide && cell !== "wall" ? "cursor-pointer hover:bg-cyan-900/30" : ""}`}
-        onClick={() => isGuide && handlePing(x, y)}
-        title={isGuide ? `${x},${y}` : ""}
+        className={`aspect-square rounded-sm flex items-center justify-center transition-all duration-150 ${bg} ${pingRing} ${cursor}`}
+        onClick={() => myRole === "guide" && handlePing(x, y)}
       >
         {content}
       </div>
     );
   };
 
-  // Determine visibility for walker (3x3 around walker)
-  const isVisible = (x: number, y: number): boolean => {
-    if (myRole === "guide") return true;
-    if (!game) return false;
-    const w = game.walker;
-    return Math.abs(x - w.x) <= 1 && Math.abs(y - w.y) <= 1;
-  };
-
   if (!room) return null;
 
   return (
     <main
-      className="min-h-screen flex flex-col items-center p-2 sm:p-4 select-none"
+      className="min-h-screen flex flex-col items-center p-1 sm:p-3 select-none"
       onTouchStart={handleTouchStart}
       onTouchEnd={handleTouchEnd}
     >
+      {/* Hidden audio element for remote voice */}
+      <audio ref={remoteAudioRef} autoPlay playsInline style={{ display: "none" }} />
+
       {/* Header */}
-      <div className="w-full max-w-2xl flex items-center justify-between mb-2">
-        <button className="btn btn-secondary text-xs sm:text-sm" onClick={() => router.push("/")}>
+      <div className="w-full max-w-3xl flex items-center justify-between mb-1 sm:mb-2">
+        <button className="btn btn-secondary text-xs" onClick={() => router.push("/")}>
           ← خروج
         </button>
         <div className="text-center">
-          <h2 className="text-lg sm:text-xl font-bold text-cyan-300">🧭 المتاهة العمياء</h2>
-          <p className="text-slate-500 text-xs">غرفة: {room}</p>
+          <h2 className="text-base sm:text-lg font-bold text-cyan-300">🧭 المتاهة العمياء</h2>
+          <p className="text-slate-500 text-[10px] sm:text-xs">غرفة: {room}</p>
         </div>
         <div className="text-right">
-          <div className={`text-sm font-bold ${status === "playing" ? "text-amber-400" : "text-slate-400"}`}>
+          <div className={`text-xs sm:text-sm font-bold ${status === "playing" ? "text-amber-400" : "text-slate-400"}`}>
             ⏱ {game ? formatTime(game.timeLeft) : "--:--"}
           </div>
           <div className="text-xs text-red-400">❤ {game?.lives ?? 3}</div>
@@ -533,65 +708,76 @@ function GameInner() {
       </div>
 
       {/* Role + Status */}
-      <div className="w-full max-w-2xl glass p-2 mb-2 text-center">
-        <p className="text-sm font-semibold">
+      <div className="w-full max-w-3xl glass p-2 mb-1 sm:mb-2 text-center">
+        <p className="text-xs sm:text-sm font-semibold">
           {status === "connecting" && "جاري الاتصال..."}
           {status === "waiting" && "في انتظار الخصم..."}
           {status === "playing" && (
             myRole === "guide"
-              ? "👁️ أنت المرشد — وجه المشي عبر الدردشة والإشارات"
-              : "🚶 أنت المشي — اتبع توجيهات المرشد"
+              ? "👁️ أنت المرشد — وجه المشي (إشارات + صوت + دردشة)"
+              : "🚶 أنت المشي — اتبع توجيهات المرشد (أنت ترى القليل!)"
           )}
           {status === "won" && "🎉 فزتم! وصلتم إلى المخرج!"}
           {status === "lost" && "💀 خسرتم! حاولوا مرة أخرى"}
         </p>
         {status === "waiting" && room && (
-          <div className="mt-2">
-            <div className="code-display text-lg mb-1">{room}</div>
+          <div className="mt-1">
+            <div className="code-display text-base sm:text-lg mb-1">{room}</div>
             <p className="text-slate-400 text-xs">شارك هذا الرمز مع صديقك</p>
           </div>
         )}
         {error && <p className="text-red-400 text-xs mt-1">{error}</p>}
+        {micError && <p className="text-red-400 text-xs mt-1">{micError}</p>}
       </div>
 
       {/* Players */}
-      <div className="w-full max-w-2xl flex justify-between gap-2 mb-2">
-        <div className={`glass p-2 flex-1 text-center text-xs ${myRole === "guide" ? "ring-2 ring-cyan-500" : ""}`}>
+      <div className="w-full max-w-3xl flex justify-between gap-2 mb-1 sm:mb-2">
+        <div className={`glass p-1.5 sm:p-2 flex-1 text-center text-xs ${myRole === "guide" ? "ring-2 ring-cyan-500" : ""}`}>
           <span className="text-cyan-400 font-bold">👁️ مرشد</span>
           <div className="text-slate-300 truncate">{game?.players.guide || name}</div>
           {myRole === "guide" && <div className="text-[10px] text-cyan-400">أنت</div>}
         </div>
-        <div className={`glass p-2 flex-1 text-center text-xs ${myRole === "walker" ? "ring-2 ring-amber-500" : ""}`}>
+        <div className={`glass p-1.5 sm:p-2 flex-1 text-center text-xs ${myRole === "walker" ? "ring-2 ring-amber-500" : ""}`}>
           <span className="text-amber-400 font-bold">🚶 مشي</span>
           <div className="text-slate-300 truncate">{game?.players.walker || opponentName || "..."}</div>
           {myRole === "walker" && <div className="text-[10px] text-amber-400">أنت</div>}
         </div>
       </div>
 
-      {/* Maze Grid */}
+      {/* Map name */}
       {game && (
-        <div className="w-full max-w-2xl mb-2">
+        <div className="w-full max-w-3xl text-center mb-1">
+          <span className="text-[10px] sm:text-xs text-slate-500">
+            🗺️ {MAP_NAMES[game.mapIndex]} ({game.mapIndex + 1}/7)
+          </span>
+        </div>
+      )}
+
+      {/* Maze Grid (scrollable on small screens) */}
+      {game && (
+        <div className="w-full max-w-3xl mb-1 sm:mb-2 overflow-auto">
           <div
-            className="glass p-2 sm:p-3 rounded-xl"
+            className="glass p-1.5 sm:p-2 rounded-xl mx-auto"
             style={{
               display: "grid",
               gridTemplateColumns: `repeat(${MAZE_SIZE}, 1fr)`,
-              gap: "2px",
+              gap: "1px",
+              width: "fit-content",
               maxWidth: "100%",
             }}
           >
             {game.maze.map((row, y) =>
-              row.map((cell, x) => renderCell(cell, x, y, isVisible(x, y), myRole === "walker", myRole === "guide"))
+              row.map((cell, x) => renderCell(cell, x, y))
             )}
           </div>
           {myRole === "guide" && (
-            <p className="text-slate-500 text-xs text-center mt-1">
-              انقر على خلية لتوجيه المشي (ping) • Click a cell to ping the walker
+            <p className="text-slate-500 text-[10px] sm:text-xs text-center mt-1">
+              انقر على خلية لتوجيه المشي • Click a cell to ping
             </p>
           )}
           {myRole === "walker" && (
-            <p className="text-slate-500 text-xs text-center mt-1">
-              استخدم الأسهم أو الأزرار أو السحب • Use arrows, buttons, or swipe
+            <p className="text-slate-500 text-[10px] sm:text-xs text-center mt-1">
+              أنت ترى القليل — اتبع المرشد • You see little — follow the guide
             </p>
           )}
         </div>
@@ -599,47 +785,27 @@ function GameInner() {
 
       {/* D-pad for walker (mobile) */}
       {myRole === "walker" && status === "playing" && (
-        <div className="grid grid-cols-3 gap-1 mb-2 w-32">
+        <div className="grid grid-cols-3 gap-1 mb-2 w-28 sm:w-32">
           <div />
-          <button
-            className="btn btn-secondary text-lg py-1"
-            onClick={() => moveWalker(0, -1)}
-          >
-            ↑
-          </button>
+          <button className="btn btn-secondary text-lg py-1" onClick={() => moveWalker(0, -1)}>↑</button>
           <div />
-          <button
-            className="btn btn-secondary text-lg py-1"
-            onClick={() => moveWalker(-1, 0)}
-          >
-            ←
-          </button>
+          <button className="btn btn-secondary text-lg py-1" onClick={() => moveWalker(-1, 0)}>←</button>
           <div className="flex items-center justify-center text-slate-600 text-xs">•</div>
-          <button
-            className="btn btn-secondary text-lg py-1"
-            onClick={() => moveWalker(1, 0)}
-          >
-            →
-          </button>
+          <button className="btn btn-secondary text-lg py-1" onClick={() => moveWalker(1, 0)}>→</button>
           <div />
-          <button
-            className="btn btn-secondary text-lg py-1"
-            onClick={() => moveWalker(0, 1)}
-          >
-            ↓
-          </button>
+          <button className="btn btn-secondary text-lg py-1" onClick={() => moveWalker(0, 1)}>↓</button>
           <div />
         </div>
       )}
 
       {/* Win/Lose overlay */}
       {(status === "won" || status === "lost") && (
-        <div className="w-full max-w-2xl text-center mb-2">
-          <div className={`glass p-4 ${status === "won" ? "border border-emerald-500/40" : "border border-red-500/40"}`}>
-            <p className="text-2xl font-bold mb-2">
+        <div className="w-full max-w-3xl text-center mb-2">
+          <div className={`glass p-3 sm:p-4 ${status === "won" ? "border border-emerald-500/40" : "border border-red-500/40"}`}>
+            <p className="text-xl sm:text-2xl font-bold mb-1 sm:mb-2">
               {status === "won" ? "🎉 فوز! / Victory!" : "💀 خسارة / Defeat"}
             </p>
-            <p className="text-slate-400 text-sm mb-3">
+            <p className="text-slate-400 text-xs sm:text-sm mb-2 sm:mb-3">
               {status === "won"
                 ? "وصلتم إلى المخرج معاً! تعاون رائع."
                 : "حاولوا مرة أخرى — تواصلوا بشكل أفضل!"}
@@ -648,8 +814,8 @@ function GameInner() {
               <button
                 className="btn btn-primary"
                 onClick={() => {
-                  const { maze, start } = generateMaze();
-                  // regenerate exit
+                  const newMapIndex = (game?.mapIndex ?? 0 + 1) % MAP_SEEDS.length;
+                  const { maze, start } = generateMazeWithSeed(MAP_SEEDS[newMapIndex]);
                   let exit = { x: MAZE_SIZE - 2, y: MAZE_SIZE - 2 };
                   if (maze[exit.y][exit.x] !== "path") {
                     outer: for (let r = MAZE_SIZE - 2; r >= 1; r--) {
@@ -660,8 +826,7 @@ function GameInner() {
                   }
                   maze[start.y][start.x] = "start";
                   maze[exit.y][exit.x] = "exit";
-                  // traps
-                  const tc = 3 + Math.floor(Math.random() * 3);
+                  const tc = 5 + Math.floor(Math.random() * 4);
                   let pl = 0;
                   const cands: Pos[] = [];
                   for (let y = 1; y < MAZE_SIZE - 1; y++)
@@ -669,7 +834,7 @@ function GameInner() {
                       if (maze[y][x] === "path") {
                         const ds = Math.abs(x - start.x) + Math.abs(y - start.y);
                         const de = Math.abs(x - exit.x) + Math.abs(y - exit.y);
-                        if (ds > 3 && de > 2) cands.push({ x, y });
+                        if (ds > 4 && de > 3) cands.push({ x, y });
                       }
                   cands.sort(() => Math.random() - 0.5);
                   for (const cc of cands) {
@@ -682,11 +847,11 @@ function GameInner() {
                     walker: start,
                     guidePing: null,
                     lives: 3,
-                    timeLeft: 120,
+                    timeLeft: 180,
                     status: "playing",
                     players: game?.players || { guide: name, walker: opponentName },
                     trapsTriggered: 0,
-                    startedAt: Date.now(),
+                    mapIndex: newMapIndex,
                   };
                   setGame(newState);
                   gameRef.current = newState;
@@ -703,19 +868,45 @@ function GameInner() {
         </div>
       )}
 
-      {/* Floating chat toggle */}
-      <button
-        onClick={() => setChatOpen(!chatOpen)}
-        className="fixed bottom-4 right-4 z-50 w-14 h-14 rounded-full bg-cyan-600 hover:bg-cyan-500 text-white shadow-lg flex items-center justify-center text-2xl transition-all duration-200 hover:scale-110"
-        aria-label="فتح الدردشة"
-      >
-        💬
-        {unreadCount > 0 && (
-          <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center">
-            {unreadCount > 9 ? "9+" : unreadCount}
-          </span>
-        )}
-      </button>
+      {/* Stacked floating buttons: Chat + Mic */}
+      <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2 items-end">
+        {/* Chat toggle */}
+        <button
+          onClick={() => setChatOpen(!chatOpen)}
+          className="w-12 h-12 sm:w-14 sm:h-14 rounded-full bg-cyan-600 hover:bg-cyan-500 text-white shadow-lg flex items-center justify-center text-xl sm:text-2xl transition-all duration-200 hover:scale-110 relative"
+          aria-label="فتح الدردشة"
+        >
+          💬
+          {unreadCount > 0 && (
+            <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center">
+              {unreadCount > 9 ? "9+" : unreadCount}
+            </span>
+          )}
+        </button>
+
+        {/* Mic toggle */}
+        <button
+          onClick={toggleMic}
+          disabled={micLoading}
+          className={`w-12 h-12 sm:w-14 sm:h-14 rounded-full shadow-lg flex items-center justify-center text-xl sm:text-2xl transition-all duration-200 hover:scale-110 relative ${
+            micOn
+              ? "bg-emerald-600 hover:bg-emerald-500 text-white"
+              : "bg-slate-700 hover:bg-slate-600 text-slate-300"
+          } ${micLoading ? "opacity-50 cursor-wait" : ""}`}
+          aria-label={micOn ? "إيقاف المايك" : "تشغيل المايك"}
+        >
+          {micLoading ? (
+            <span className="animate-spin">⏳</span>
+          ) : micOn ? (
+            <span className="relative">
+              🎤
+              <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-emerald-400 rounded-full animate-pulse" />
+            </span>
+          ) : (
+            "🔇"
+          )}
+        </button>
+      </div>
 
       {/* Chat panel */}
       {chatOpen && (
