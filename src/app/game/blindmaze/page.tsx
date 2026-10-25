@@ -224,7 +224,8 @@ function GameInner() {
   const toggleMic = useCallback(async () => {
     if (micLoading) return;
     if (micOn) {
-      // Turn off
+      // Turn off — update icon immediately
+      setMicOn(false);
       if (localStreamRef.current) {
         localStreamRef.current.getTracks().forEach((t) => t.stop());
         localStreamRef.current = null;
@@ -233,7 +234,6 @@ function GameInner() {
         try { mediaCallRef.current.close(); } catch {}
         mediaCallRef.current = null;
       }
-      setMicOn(false);
       setMicError("");
       // Notify other party
       if (connRef.current && connRef.current.open) {
@@ -242,7 +242,8 @@ function GameInner() {
       return;
     }
 
-    // Turn on
+    // Turn on — show ON state immediately (optimistic), then loading
+    setMicOn(true);
     setMicLoading(true);
     setMicError("");
     try {
@@ -923,7 +924,10 @@ function GameInner() {
           aria-label={micOn ? "إيقاف المايك" : "تشغيل المايك"}
         >
           {micLoading ? (
-            <span className="animate-spin">⏳</span>
+            <span className="relative">
+              🎤
+              <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-amber-400 rounded-full animate-ping" />
+            </span>
           ) : micOn ? (
             <span className="relative">
               🎤
